@@ -1,0 +1,12 @@
+{
+  "name": "yt1bet-backend",
+  "version": "1.0.0",
+  "description": "yt-dlp backend for yt1bet",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
