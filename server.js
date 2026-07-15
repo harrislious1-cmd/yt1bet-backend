@@ -3,16 +3,19 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const helmet = require('helmet');
+const pLimit = require('p-limit');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ---- CORS ----
-// Replace with your actual frontend domain(s) once the new domain is live.
+app.use(helmet());
+
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
-  'https://yt1bet.vercel.app',      // your current Vercel domain
-  'https://dlmate.site',            // your new domain, once live
+  'https://yt1bet.vercel.app',
+  'https://dlmate.site',
   'https://www.dlmate.site'
 ];
 
@@ -27,12 +30,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// YouTube client fallback order
+const limit = pLimit(3);
+
+const downloadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  message: { error: 'Too many requests, please wait a moment.' }
+});
+
 const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
 
-// Basic URL validation — only allow http(s) links to youtube/instagram domains.
-// This does not replace execFile's protection against shell injection, but it
-// stops obviously malformed/malicious input early.
 const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
 
 function isYouTube(url) {
@@ -47,26 +54,24 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'yt-dlp server running' });
 });
 
-app.get('/download', async (req, res) => {
+app.get('/download', downloadLimiter, async (req, res) => {
   const { url, format, quality } = req.query;
   if (!url) return res.status(400).json({ error: 'No URL provided' });
   if (!URL_PATTERN.test(url)) {
     return res.status(400).json({ error: 'Only YouTube or Instagram URLs are supported' });
   }
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
-
   try {
-    if (isInstagram(url)) {
-      await downloadInstagram(url, format, quality, tmpDir, res);
-    } else {
-      await downloadYouTube(url, format, quality, tmpDir, res);
-    }
+    await limit(() => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
+      return isInstagram(url)
+        ? downloadInstagram(url, format, quality, tmpDir, res)
+        : downloadYouTube(url, format, quality, tmpDir, res);
+    });
   } catch (err) {
-    cleanup(tmpDir);
     console.error('Download error:', err.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Download failed' });
+      res.status(500).json({ error: 'Download failed. Please try again.' });
     }
   }
 });
@@ -186,8 +191,6 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
   throw new Error(lastError?.message || 'All download methods failed');
 }
 
-// Uses execFile instead of exec — arguments are passed as an array, never
-// interpolated into a shell string, which closes the command injection hole.
 function runYtDlp(args) {
   return new Promise((resolve, reject) => {
     console.log('Running yt-dlp with args:', args);
