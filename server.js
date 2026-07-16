@@ -64,7 +64,7 @@ const transcriptLimiter = rateLimit({
   message: { error: 'Too many requests, please wait a moment.' }
 });
 
-const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
+const YT_CLIENTS = ['web', 'android_vr', 'android', 'mweb'];
 
 const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
 const YT_URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//i;
@@ -287,7 +287,7 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
   for (const client of YT_CLIENTS) {
     try {
       console.log(`Trying client: ${client}`);
-      const clientArgs = ['--extractor-args', `youtube:player_client=${client}`, '--no-playlist', '-q', ...durationFilter];
+      const clientArgs = ['--extractor-args', `youtube:player_client=${client}`, '--no-playlist', '-q', '-S', 'res,br', ...durationFilter];
 
       if (format === 'mp3') {
         const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
