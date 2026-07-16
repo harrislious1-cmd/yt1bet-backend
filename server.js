@@ -1,4 +1,3 @@
-
 const express = require('express');
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -49,9 +48,17 @@ const downloadLimiter = rateLimit({
   message: { error: 'Too many requests, please wait a moment.' }
 });
 
+// Separate, more generous limiter for thumbnails since they're cheap (no yt-dlp/ffmpeg work)
+const thumbnailLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { error: 'Too many requests, please wait a moment.' }
+});
+
 const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
 
 const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
+const YT_URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//i;
 
 // Reject videos longer than this (seconds) before download starts
 const MAX_DURATION_SECONDS = 3600; // 1 hour
@@ -64,8 +71,53 @@ function isInstagram(url) {
   return url.includes('instagram.com');
 }
 
+// Extracts an 11-character YouTube video ID from any standard YouTube URL format
+function extractYouTubeId(url) {
+  const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/|\/embed\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'yt-dlp server running' });
+});
+
+// ── THUMBNAIL DOWNLOAD (YouTube only, no yt-dlp needed) ──────────────
+app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
+  const { url } = req.query;
+
+  if (!url) return res.status(400).json({ error: 'No URL provided' });
+  if (url.length > 500) return res.status(400).json({ error: 'Invalid URL' });
+  if (!YT_URL_PATTERN.test(url)) {
+    return res.status(400).json({ error: 'Only YouTube URLs are supported for thumbnails' });
+  }
+
+  const videoId = extractYouTubeId(url);
+  if (!videoId) return res.status(400).json({ error: 'Could not find a video ID in that URL' });
+
+  // Try highest quality first, fall back if YouTube doesn't have it for this video
+  const sizesToTry = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default'];
+
+  for (const size of sizesToTry) {
+    const imgUrl = `https://img.youtube.com/vi/${videoId}/${size}.jpg`;
+    try {
+      const response = await fetch(imgUrl);
+      if (response.ok) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        // YouTube returns a tiny grey placeholder image (under ~1.5KB) when a
+        // given size doesn't actually exist for this video — skip those.
+        if (buffer.length > 1500) {
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('Content-Disposition', `attachment; filename="thumbnail_${videoId}.jpg"`);
+          res.setHeader('Content-Type', 'image/jpeg');
+          return res.send(buffer);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return res.status(404).json({ error: 'Thumbnail not available for this video' });
 });
 
 app.get('/download', downloadLimiter, async (req, res) => {
