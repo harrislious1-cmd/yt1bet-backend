@@ -57,6 +57,13 @@ const thumbnailLimiter = rateLimit({
   message: { error: 'Too many requests, please wait a moment.' }
 });
 
+// Transcript fetching is also cheap (no video/audio processing), similar limit to thumbnails
+const transcriptLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: 'Too many requests, please wait a moment.' }
+});
+
 const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
 
 const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
@@ -77,6 +84,32 @@ function isInstagram(url) {
 function extractYouTubeId(url) {
   const match = url.match(/(?:v=|\/shorts\/|youtu\.be\/|\/embed\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
+}
+
+// Parses a WebVTT caption file into an array of { time, text } lines,
+// stripping HTML-ish tags and removing duplicate lines auto-captions often produce
+function parseVtt(raw) {
+  const lines = raw.split('\n');
+  const result = [];
+  let currentTime = null;
+  const seenText = new Set();
+
+  for (const line of lines) {
+    const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2})\.\d{3}\s-->/);
+    if (timeMatch) {
+      currentTime = timeMatch[1];
+      continue;
+    }
+    const clean = line.replace(/<[^>]*>/g, '').trim();
+    if (clean && currentTime && !clean.startsWith('WEBVTT') && !clean.match(/^\d+$/)) {
+      const key = currentTime + clean;
+      if (!seenText.has(key)) {
+        seenText.add(key);
+        result.push({ time: currentTime, text: clean });
+      }
+    }
+  }
+  return result;
 }
 
 app.get('/', (req, res) => {
@@ -119,6 +152,62 @@ app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
   }
 
   return res.status(404).json({ error: 'Thumbnail not available for this video' });
+});
+
+// ── TRANSCRIPT DOWNLOAD (YouTube only) ────────────────────────────────
+// format=plain      -> plain text, no timestamps
+// format=timestamped -> each line prefixed with [HH:MM:SS]
+app.get('/transcript', transcriptLimiter, async (req, res) => {
+  const { url, format } = req.query;
+
+  if (!url) return res.status(400).json({ error: 'No URL provided' });
+  if (url.length > 500) return res.status(400).json({ error: 'Invalid URL' });
+  if (!YT_URL_PATTERN.test(url)) {
+    return res.status(400).json({ error: 'Only YouTube URLs are supported for transcripts' });
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytsub-'));
+
+  try {
+    const outputTemplate = path.join(tmpDir, 'sub');
+    const args = [
+      '--skip-download',
+      '--write-auto-sub',
+      '--write-sub',
+      '--sub-lang', 'en',
+      '--sub-format', 'vtt',
+      '--no-playlist', '-q',
+      '-o', outputTemplate,
+      url
+    ];
+    await runYtDlp(args);
+
+    const files = fs.readdirSync(tmpDir);
+    const vttFile = files.find(f => f.endsWith('.vtt'));
+    if (!vttFile) throw new Error('No captions available for this video');
+
+    const raw = fs.readFileSync(path.join(tmpDir, vttFile), 'utf-8');
+    const parsed = parseVtt(raw);
+
+    if (parsed.length === 0) throw new Error('No captions available for this video');
+
+    const output = format === 'timestamped'
+      ? parsed.map(l => `[${l.time}] ${l.text}`).join('\n')
+      : parsed.map(l => l.text).join(' ');
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Disposition', 'attachment; filename="transcript.txt"');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(output);
+
+  } catch (err) {
+    console.error('Transcript error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Transcript not available for this video.' });
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
 });
 
 app.get('/download', downloadLimiter, async (req, res) => {
@@ -291,7 +380,7 @@ setInterval(() => {
   const tmpBase = os.tmpdir();
   fs.readdir(tmpBase, (err, files) => {
     if (err) return;
-    files.filter(f => f.startsWith('ytdl-')).forEach(f => {
+    files.filter(f => f.startsWith('ytdl-') || f.startsWith('ytsub-')).forEach(f => {
       const fullPath = path.join(tmpBase, f);
       fs.stat(fullPath, (err, stats) => {
         if (err) return;
