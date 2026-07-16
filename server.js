@@ -107,7 +107,6 @@ app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
         // given size doesn't actually exist for this video — skip those.
         if (buffer.length > 1500) {
           res.setHeader('Cache-Control', 'no-store');
-          res.setHeader('Content-Disposition', `attachment; filename="thumbnail_${videoId}.jpg"`);
           res.setHeader('Content-Type', 'image/jpeg');
           return res.send(buffer);
         }
