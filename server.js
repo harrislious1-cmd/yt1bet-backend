@@ -12,7 +12,9 @@ app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 3000;
 
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 
 // Overall response timeout safety net (separate from yt-dlp's own timeout)
 app.use((req, res, next) => {
