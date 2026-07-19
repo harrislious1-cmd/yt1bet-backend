@@ -42,6 +42,29 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── YOUTUBE COOKIE AUTHENTICATION ─────────────────────────────────────
+// Decodes the base64 cookies.txt stored in Railway's YT_COOKIES_BASE64
+// env var and writes it to disk once at startup. Passing real logged-in
+// cookies to yt-dlp helps avoid YouTube's "Sign in to confirm you're not
+// a bot" / HTTP 429 blocks that anonymous data-center IPs get hit with.
+const COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
+
+if (process.env.YT_COOKIES_BASE64) {
+  try {
+    const decoded = Buffer.from(process.env.YT_COOKIES_BASE64, 'base64').toString('utf-8');
+    fs.writeFileSync(COOKIES_PATH, decoded);
+    console.log('YouTube cookies loaded successfully');
+  } catch (e) {
+    console.error('Failed to load cookies:', e.message);
+  }
+} else {
+  console.log('No YT_COOKIES_BASE64 env var set — running without cookie authentication');
+}
+
+function getCookieArgs() {
+  return fs.existsSync(COOKIES_PATH) ? ['--cookies', COOKIES_PATH] : [];
+}
+
 const limit = pLimit(3);
 
 const downloadLimiter = rateLimit({
@@ -64,7 +87,7 @@ const transcriptLimiter = rateLimit({
   message: { error: 'Too many requests, please wait a moment.' }
 });
 
-const YT_CLIENTS = ['web', 'android_vr', 'android', 'mweb'];
+const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
 
 const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
 const YT_URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//i;
@@ -129,7 +152,6 @@ app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
   const videoId = extractYouTubeId(url);
   if (!videoId) return res.status(400).json({ error: 'Could not find a video ID in that URL' });
 
-  // Try highest quality first, fall back if YouTube doesn't have it for this video
   const sizesToTry = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default'];
 
   for (const size of sizesToTry) {
@@ -138,8 +160,6 @@ app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
       const response = await fetch(imgUrl);
       if (response.ok) {
         const buffer = Buffer.from(await response.arrayBuffer());
-        // YouTube returns a tiny grey placeholder image (under ~1.5KB) when a
-        // given size doesn't actually exist for this video — skip those.
         if (buffer.length > 1500) {
           res.setHeader('Cache-Control', 'no-store');
           res.setHeader('Content-Type', 'image/jpeg');
@@ -155,8 +175,6 @@ app.get('/thumbnail', thumbnailLimiter, async (req, res) => {
 });
 
 // ── TRANSCRIPT DOWNLOAD (YouTube only) ────────────────────────────────
-// format=plain      -> plain text, no timestamps
-// format=timestamped -> each line prefixed with [HH:MM:SS]
 app.get('/transcript', transcriptLimiter, async (req, res) => {
   const { url, format } = req.query;
 
@@ -171,6 +189,7 @@ app.get('/transcript', transcriptLimiter, async (req, res) => {
   try {
     const outputTemplate = path.join(tmpDir, 'sub');
     const args = [
+      ...getCookieArgs(),
       '--skip-download',
       '--write-auto-sub',
       '--write-sub',
@@ -287,7 +306,7 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
   for (const client of YT_CLIENTS) {
     try {
       console.log(`Trying client: ${client}`);
-      const clientArgs = ['--extractor-args', `youtube:player_client=${client}`, '--no-playlist', '-q', '-S', 'res,br', ...durationFilter];
+      const clientArgs = [...getCookieArgs(), '--extractor-args', `youtube:player_client=${client}`, '--no-playlist', '-q', ...durationFilter];
 
       if (format === 'mp3') {
         const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
@@ -375,7 +394,6 @@ function cleanup(dir) {
 }
 
 // Periodic sweep: removes any leftover temp folders older than 10 minutes
-// (safety net in case a crash/error skips the normal cleanup() call)
 setInterval(() => {
   const tmpBase = os.tmpdir();
   fs.readdir(tmpBase, (err, files) => {
