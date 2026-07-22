@@ -111,6 +111,17 @@ function extractYouTubeId(url) {
 
 // Parses a WebVTT caption file into an array of { time, text } lines,
 // stripping HTML-ish tags and removing duplicate lines auto-captions often produce
+function decodeEntities(str) {
+  return str
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
 function parseVtt(raw) {
   const lines = raw.split('\n');
   const result = [];
@@ -123,7 +134,8 @@ function parseVtt(raw) {
       currentTime = timeMatch[1];
       continue;
     }
-    const clean = line.replace(/<[^>]*>/g, '').trim();
+    let clean = line.replace(/<[^>]*>/g, '').trim();
+    clean = decodeEntities(clean);
     if (clean && currentTime && !clean.startsWith('WEBVTT') && !clean.match(/^\d+$/)) {
       const key = currentTime + clean;
       if (!seenText.has(key)) {
