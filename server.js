@@ -69,7 +69,7 @@ const limit = pLimit(3);
 
 const downloadLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 5,
+  max: 9,
   message: { error: 'Too many requests, please wait a moment.' }
 });
 
